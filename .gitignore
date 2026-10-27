@@ -40,3 +40,6 @@ results/*
 .env
 *.pem
 *.key
+
+# Superseded validation reference backup
+tests/reference_old_backup/
