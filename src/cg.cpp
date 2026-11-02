@@ -56,7 +56,7 @@ std::vector<double> csr_spmv(
 } // namespace
 
 // Serial Conjugate Gradient solver.
-// Stage 1: initialization and zero-RHS handling only.
+// Serial Conjugate Gradient solver with convergence and breakdown handling.
 SolverResult conjugate_gradient(
     const CSRMatrix& A,
     const std::vector<double>& b,
