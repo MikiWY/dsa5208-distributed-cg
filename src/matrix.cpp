@@ -69,6 +69,18 @@ CSRMatrix generate_poisson_matrix(
             entries.emplace_back(k + n, -scale);
         }
 
+        // Prevent CSR row-pointer integer overflow.
+        const std::size_t max_nnz =
+            static_cast<std::size_t>(
+                std::numeric_limits<int>::max()
+            );
+
+        if (A.values.size() > max_nnz - entries.size()) {
+            throw std::overflow_error(
+                "CSR nonzero count exceeds int range"
+            );
+        }
+
         // Entries are already in ascending column order.
         for (const auto& entry : entries) {
             A.col_idx.push_back(entry.first);
