@@ -25,3 +25,14 @@ nvcc -std=c++17 -O2 -arch=sm_86 \
   -o build/test_gpu_cg
 
 echo "PASS: GPU test compilation"
+
+echo "===== Build GPU Workspace ====="
+
+nvcc -std=c++17 -O2 -arch=sm_86 \
+  -Iinclude \
+  src/matrix.cpp \
+  src/gpu_benchmark.cu \
+  tests/test_gpu_workspace.cu \
+  -o build/test_gpu_workspace
+
+echo "PASS: GPU Workspace compilation"
