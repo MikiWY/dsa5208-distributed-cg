@@ -1,5 +1,7 @@
 #pragma once
 
+#include "solver_timing.hpp"
+
 #include <mpi.h>
 #include <vector>
 
@@ -18,4 +20,12 @@ double distributed_dot_product(
     const std::vector<double>& a_local,
     const std::vector<double>& b_local,
     MPI_Comm comm
+);
+
+
+double distributed_dot_product(
+    const std::vector<double>& a_local,
+    const std::vector<double>& b_local,
+    MPI_Comm comm,
+    SolverTiming* timing
 );

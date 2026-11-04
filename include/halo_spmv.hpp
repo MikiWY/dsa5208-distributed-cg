@@ -1,5 +1,7 @@
 #pragma once
 
+#include "solver_timing.hpp"
+
 #include <mpi.h>
 #include <vector>
 
@@ -32,4 +34,13 @@ std::vector<double> distributed_spmv_halo(
     const std::vector<double>& x_local,
     const HaloExchangePlan& plan,
     MPI_Comm comm
+);
+
+// Optional component timing interface.
+std::vector<double> distributed_spmv_halo(
+    const CSRMatrix& A,
+    const std::vector<double>& x_local,
+    const HaloExchangePlan& plan,
+    MPI_Comm comm,
+    SolverTiming* timing
 );

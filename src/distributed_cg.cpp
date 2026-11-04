@@ -1,4 +1,5 @@
 #include "distributed_cg.hpp"
+#include "timing_utils.hpp"
 
 #include <algorithm>
 
@@ -16,8 +17,13 @@ SolverResult distributed_conjugate_gradient_allgatherv(
     const CSRMatrix& A,
     const std::vector<double>& b_local,
     const SolverOptions& options,
-    MPI_Comm comm
+    MPI_Comm comm,
+    SolverTiming* timing
 ) {
+    if (timing) {
+        *timing = SolverTiming{};
+    }
+
     int rank = 0;
     int size = 0;
 
@@ -122,7 +128,7 @@ SolverResult distributed_conjugate_gradient_allgatherv(
 
     // Global squared norm of the RHS.
     const double b_norm_squared =
-        distributed_dot_product(b_local, b_local, comm);
+        distributed_dot_product(b_local, b_local, comm, timing);
 
     if (!std::isfinite(b_norm_squared)) {
         result.termination_reason =
@@ -169,12 +175,12 @@ SolverResult distributed_conjugate_gradient_allgatherv(
         // Step 1: Distributed sparse matrix-vector product.
         const std::vector<double> q =
             distributed_spmv_allgatherv(
-                A, p, recvcounts, displs, comm
+                A, p, recvcounts, displs, comm, timing
             );
 
         // Step 2: Global dot product p^T * A * p.
         const double pq =
-            distributed_dot_product(p, q, comm);
+            distributed_dot_product(p, q, comm, timing);
 
         if (!std::isfinite(pq)) {
             result.termination_reason =
@@ -197,16 +203,20 @@ SolverResult distributed_conjugate_gradient_allgatherv(
         }
 
         // Step 3: Update locally owned solution and residual.
+        const double update_start = timing_now(timing);
+
         for (int i = 0; i < local_N; ++i) {
             result.x[i] += alpha * p[i];
             r[i] -= alpha * q[i];
         }
 
+        timing_add_compute(timing, update_start);
+
         result.iterations = k + 1;
 
         // Step 4: Global squared residual norm.
         const double rr_new =
-            distributed_dot_product(r, r, comm);
+            distributed_dot_product(r, r, comm, timing);
 
         if (!std::isfinite(rr_new)) {
             result.termination_reason =
@@ -234,9 +244,13 @@ SolverResult distributed_conjugate_gradient_allgatherv(
             return result;
         }
 
+        const double direction_start = timing_now(timing);
+
         for (int i = 0; i < local_N; ++i) {
             p[i] = r[i] + beta * p[i];
         }
+
+        timing_add_compute(timing, direction_start);
 
         rr_old = rr_new;
     }
@@ -245,4 +259,16 @@ SolverResult distributed_conjugate_gradient_allgatherv(
         TerminationReason::MaxIterations;
 
     return result;
+}
+
+// Compatibility overload without component timing.
+SolverResult distributed_conjugate_gradient_allgatherv(
+    const CSRMatrix& A,
+    const std::vector<double>& b_local,
+    const SolverOptions& options,
+    MPI_Comm comm
+) {
+    return distributed_conjugate_gradient_allgatherv(
+        A, b_local, options, comm, nullptr
+    );
 }

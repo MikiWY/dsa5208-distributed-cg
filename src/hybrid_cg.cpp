@@ -1,4 +1,5 @@
 #include "hybrid_cg.hpp"
+#include "timing_utils.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -16,8 +17,13 @@ SolverResult hybrid_conjugate_gradient_allgatherv(
     const CSRMatrix& A,
     const std::vector<double>& b_local,
     const SolverOptions& options,
-    MPI_Comm comm
+    MPI_Comm comm,
+    SolverTiming* timing
 ) {
+    if (timing) {
+        *timing = SolverTiming{};
+    }
+
     int rank = 0;
     int size = 0;
 
@@ -167,7 +173,7 @@ SolverResult hybrid_conjugate_gradient_allgatherv(
 
     // Global RHS norm: OpenMP local dot + MPI_Allreduce.
     const double b_norm_squared =
-        hybrid_global_dot_product(b_local, b_local, comm);
+        hybrid_global_dot_product(b_local, b_local, comm, timing);
 
     if (!std::isfinite(b_norm_squared)) {
         result.termination_reason =
@@ -214,12 +220,12 @@ SolverResult hybrid_conjugate_gradient_allgatherv(
         // MPI communication is outside OpenMP parallel regions.
         const std::vector<double> q =
             hybrid_spmv_allgatherv(
-                A, p, recvcounts, displs, comm
+                A, p, recvcounts, displs, comm, timing
             );
 
         // Step 2: Global p^T * A * p.
         const double pq =
-            hybrid_global_dot_product(p, q, comm);
+            hybrid_global_dot_product(p, q, comm, timing);
 
         if (!std::isfinite(pq)) {
             result.termination_reason =
@@ -242,14 +248,18 @@ SolverResult hybrid_conjugate_gradient_allgatherv(
         }
 
         // Step 3: Update locally owned solution and residual.
+        const double update_start = timing_now(timing);
+
         openmp_axpy(alpha, p, result.x);
         openmp_axpy(-alpha, q, r);
+
+        timing_add_compute(timing, update_start);
 
         result.iterations = k + 1;
 
         // Step 4: Global residual norm.
         const double rr_new =
-            hybrid_global_dot_product(r, r, comm);
+            hybrid_global_dot_product(r, r, comm, timing);
 
         if (!std::isfinite(rr_new)) {
             result.termination_reason =
@@ -277,10 +287,14 @@ SolverResult hybrid_conjugate_gradient_allgatherv(
             return result;
         }
 
+        const double direction_start = timing_now(timing);
+
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < A.local_num_rows; ++i) {
             p[i] = r[i] + beta * p[i];
         }
+
+        timing_add_compute(timing, direction_start);
 
         rr_old = rr_new;
     }
@@ -289,4 +303,16 @@ SolverResult hybrid_conjugate_gradient_allgatherv(
         TerminationReason::MaxIterations;
 
     return result;
+}
+
+// Compatibility overload without component timing.
+SolverResult hybrid_conjugate_gradient_allgatherv(
+    const CSRMatrix& A,
+    const std::vector<double>& b_local,
+    const SolverOptions& options,
+    MPI_Comm comm
+) {
+    return hybrid_conjugate_gradient_allgatherv(
+        A, b_local, options, comm, nullptr
+    );
 }

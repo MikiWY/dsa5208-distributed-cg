@@ -1,4 +1,5 @@
 #include "hybrid_spmv.hpp"
+#include "timing_utils.hpp"
 
 #include <stdexcept>
 #include <vector>
@@ -10,7 +11,8 @@ std::vector<double> hybrid_spmv_allgatherv(
     const std::vector<double>& x_local,
     const std::vector<int>& recvcounts,
     const std::vector<int>& displs,
-    MPI_Comm comm
+    MPI_Comm comm,
+    SolverTiming* timing
 ) {
     int rank = 0;
     int size = 0;
@@ -81,6 +83,7 @@ std::vector<double> hybrid_spmv_allgatherv(
     // Gather the full input vector on every MPI rank.
     std::vector<double> x_global(A.global_rows, 0.0);
 
+    const double comm_start = timing_now(timing);
     MPI_Allgatherv(
         x_local.data(),
         A.local_num_rows,
@@ -92,6 +95,24 @@ std::vector<double> hybrid_spmv_allgatherv(
         comm
     );
 
+    timing_add_vector_comm(timing, comm_start);
+
+    const double compute_start = timing_now(timing);
     // Local CSR computation uses OpenMP.
-    return openmp_csr_spmv(A, x_global);
+    auto y_local = openmp_csr_spmv(A, x_global);
+    timing_add_compute(timing, compute_start);
+    return y_local;
+}
+
+// Compatibility overload without component timing.
+std::vector<double> hybrid_spmv_allgatherv(
+    const CSRMatrix& A,
+    const std::vector<double>& x_local,
+    const std::vector<int>& recvcounts,
+    const std::vector<int>& displs,
+    MPI_Comm comm
+) {
+    return hybrid_spmv_allgatherv(
+        A, x_local, recvcounts, displs, comm, nullptr
+    );
 }

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <exception>
 #include <iomanip>
+#include <sstream>
 #include <iostream>
 #include <string>
 #include <stdexcept>
@@ -11,6 +12,7 @@
 
 #include "benchmark_csv.hpp"
 #include "benchmark_version.hpp"
+#include "solver_timing.hpp"
 #include "distributed_cg.hpp"
 #include "distributed_cg_halo.hpp"
 #include "hybrid_cg.hpp"
@@ -269,23 +271,30 @@ int main(int argc, char** argv) {
     const double start = MPI_Wtime();
 
     SolverResult result;
+    SolverTiming component_timing;
+
+    const bool timing_available = true;
 
     if (solver == "mpi" && communication == "allgatherv") {
         result = distributed_conjugate_gradient_allgatherv(
-            A, b_local, options, MPI_COMM_WORLD
+            A, b_local, options, MPI_COMM_WORLD,
+            &component_timing
         );
     } else if (solver == "mpi" && communication == "halo") {
         result = distributed_conjugate_gradient_halo(
-            A, b_local, options, halo_plan, MPI_COMM_WORLD
+            A, b_local, options, halo_plan, MPI_COMM_WORLD,
+            &component_timing
         );
     } else if (solver == "hybrid" &&
                communication == "allgatherv") {
         result = hybrid_conjugate_gradient_allgatherv(
-            A, b_local, options, MPI_COMM_WORLD
+            A, b_local, options, MPI_COMM_WORLD,
+            &component_timing
         );
     } else {
         result = hybrid_conjugate_gradient_halo(
-            A, b_local, options, halo_plan, MPI_COMM_WORLD
+            A, b_local, options, halo_plan, MPI_COMM_WORLD,
+            &component_timing
         );
     }
 
@@ -302,6 +311,23 @@ int main(int argc, char** argv) {
         MPI_MAX,
         MPI_COMM_WORLD
     );
+
+    // Aggregate measured component times after CG-only timing.
+    // Each category uses the maximum accumulated rank time.
+    double component_local[3] = {
+        component_timing.compute_s,
+        component_timing.vector_comm_s,
+        component_timing.reduction_s
+    };
+
+    double component_max[3] = {};
+
+    if (timing_available) {
+        MPI_Allreduce(
+            component_local, component_max,
+            3, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD
+        );
+    }
 
     // Independent true residual validation (not timed).
     const std::vector<double> Ax =
@@ -408,8 +434,22 @@ int main(int argc, char** argv) {
             record.relative_residual = true_residual;
             record.git_commit = benchmark_git_commit();
 
-            // Timing components are not measured yet.
-            // Leave them empty rather than reporting zero.
+            // V1/V3 component timing is measured.
+            // V2/V4 fields remain empty until instrumented.
+            if (timing_available) {
+                auto format_time = [](double seconds) {
+                    std::ostringstream out;
+                    out << std::setprecision(17) << seconds;
+                    return out.str();
+                };
+
+                record.compute_s =
+                    format_time(component_max[0]);
+                record.vector_comm_s =
+                    format_time(component_max[1]);
+                record.reduction_s =
+                    format_time(component_max[2]);
+            }
 
             append_benchmark_timing_csv(
                 timing_output, record

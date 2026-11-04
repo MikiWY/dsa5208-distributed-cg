@@ -1,5 +1,7 @@
 #pragma once
 
+#include "solver_timing.hpp"
+
 #include <mpi.h>
 #include <vector>
 
@@ -24,4 +26,14 @@ std::vector<double> hybrid_spmv_allgatherv(
     const std::vector<int>& recvcounts,
     const std::vector<int>& displs,
     MPI_Comm comm
+);
+
+// Optional component timing overload.
+std::vector<double> hybrid_spmv_allgatherv(
+    const CSRMatrix& A,
+    const std::vector<double>& x_local,
+    const std::vector<int>& recvcounts,
+    const std::vector<int>& displs,
+    MPI_Comm comm,
+    SolverTiming* timing
 );

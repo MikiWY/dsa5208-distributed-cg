@@ -1,5 +1,7 @@
 #pragma once
 
+#include "solver_timing.hpp"
+
 #include <mpi.h>
 #include <vector>
 
@@ -47,4 +49,13 @@ SolverResult distributed_conjugate_gradient_allgatherv(
     const std::vector<double>& b_local,
     const SolverOptions& options,
     MPI_Comm comm
+);
+
+// CG with optional component timing.
+SolverResult distributed_conjugate_gradient_allgatherv(
+    const CSRMatrix& A,
+    const std::vector<double>& b_local,
+    const SolverOptions& options,
+    MPI_Comm comm,
+    SolverTiming* timing
 );

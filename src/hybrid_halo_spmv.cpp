@@ -1,4 +1,5 @@
 #include "hybrid_halo_spmv.hpp"
+#include "timing_utils.hpp"
 
 #include <omp.h>
 
@@ -12,7 +13,8 @@ std::vector<double> hybrid_spmv_halo(
     const CSRMatrix& A,
     const std::vector<double>& x_local,
     const HaloExchangePlan& plan,
-    MPI_Comm comm
+    MPI_Comm comm,
+    SolverTiming* timing
 ) {
     // MPI calls must be made by the thread that initialized MPI.
     int provided = MPI_THREAD_SINGLE;
@@ -96,10 +98,16 @@ std::vector<double> hybrid_spmv_halo(
     }
 
     // MPI communication remains outside OpenMP regions.
+    const double comm_start = timing_now(timing);
+
     const std::vector<double> ghost_values =
         exchange_halo_values_blocking(
             plan, x_local, comm
         );
+
+    timing_add_vector_comm(timing, comm_start);
+
+    const double compute_start = timing_now(timing);
 
     std::vector<double> y_local(A.local_num_rows, 0.0);
 
@@ -124,5 +132,18 @@ std::vector<double> hybrid_spmv_halo(
         y_local[r] = sum;
     }
 
+    timing_add_compute(timing, compute_start);
     return y_local;
+}
+
+// Compatibility interface without component timing.
+std::vector<double> hybrid_spmv_halo(
+    const CSRMatrix& A,
+    const std::vector<double>& x_local,
+    const HaloExchangePlan& plan,
+    MPI_Comm comm
+) {
+    return hybrid_spmv_halo(
+        A, x_local, plan, comm, nullptr
+    );
 }

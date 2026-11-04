@@ -1,5 +1,7 @@
 #pragma once
 
+#include "solver_timing.hpp"
+
 #include <mpi.h>
 #include <vector>
 
@@ -66,4 +68,14 @@ SolverResult distributed_conjugate_gradient_halo(
     const SolverOptions& options,
     const HaloExchangePlan& halo_plan,
     MPI_Comm comm
+);
+
+// Prebuilt Halo Plan with optional component timing.
+SolverResult distributed_conjugate_gradient_halo(
+    const CSRMatrix& A,
+    const std::vector<double>& b_local,
+    const SolverOptions& options,
+    const HaloExchangePlan& halo_plan,
+    MPI_Comm comm,
+    SolverTiming* timing
 );
