@@ -36,3 +36,20 @@ nvcc -std=c++17 -O2 -arch=sm_86 \
   -o build/test_gpu_workspace
 
 echo "PASS: GPU Workspace compilation"
+
+echo "===== Build GPU Benchmark ====="
+
+COMMIT=$(git rev-parse HEAD)
+
+nvcc -std=c++17 -O2 -arch=sm_86 \
+  -Iinclude \
+  "-DDSA5208_GIT_COMMIT=\"$COMMIT\"" \
+  src/matrix.cpp \
+  src/gpu_benchmark.cu \
+  src/benchmark_csv.cpp \
+  src/correctness_csv.cpp \
+  src/gpu_timing_csv.cpp \
+  src/gpu_benchmark_main.cu \
+  -o build/gpu_benchmark
+
+echo "PASS: GPU Benchmark compilation"
