@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "benchmark_csv.hpp"
+#include "benchmark_options.hpp"
+#include "correctness_csv.hpp"
 #include "benchmark_version.hpp"
 #include "solver_timing.hpp"
 #include "distributed_cg.hpp"
@@ -60,68 +62,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Grid size: default n=8, optionally specified by --n.
-    int n = 8;
-    std::string run_id = "manual";
-    std::string timing_output;
-
-    // Solver and communication configuration.
-    std::string solver = "mpi";
-    std::string communication = "allgatherv";
-
+    BenchmarkOptions cli;
     bool arguments_valid = true;
 
-    for (int i = 1; i < argc; ++i) {
-        const std::string arg(argv[i]);
-
-        if (arg == "--n" && i + 1 < argc) {
-            try {
-                const std::string value(argv[++i]);
-                std::size_t parsed = 0;
-                const long long requested =
-                    std::stoll(value, &parsed);
-
-                if (parsed != value.size() ||
-                    requested < 1 ||
-                    requested > 4096) {
-                    arguments_valid = false;
-                } else {
-                    n = static_cast<int>(requested);
-                }
-            } catch (const std::exception&) {
-                arguments_valid = false;
-            }
-        } else if (arg == "--solver" && i + 1 < argc) {
-            solver = argv[++i];
-
-            if (solver != "mpi" && solver != "hybrid") {
-                arguments_valid = false;
-            }
-
-        } else if (arg == "--comm" && i + 1 < argc) {
-            communication = argv[++i];
-
-            if (communication != "allgatherv" &&
-                communication != "halo") {
-                arguments_valid = false;
-            }
-
-        } else if (arg == "--run-id" && i + 1 < argc) {
-            run_id = argv[++i];
-            if (run_id.empty()) {
-                arguments_valid = false;
-            }
-        } else if (arg == "--timing-output" && i + 1 < argc) {
-            timing_output = argv[++i];
-            if (timing_output.empty()) {
-                arguments_valid = false;
-            }
-        } else {
-            arguments_valid = false;
+    try {
+        cli = parse_benchmark_options(argc, argv);
+    } catch (const std::exception& e) {
+        if (rank == 0) {
+            std::cerr << "Invalid benchmark arguments: "
+                      << e.what() << "\n";
         }
+        arguments_valid = false;
     }
 
-    // Check all ranks before continuing.
     const int local_ok = arguments_valid ? 1 : 0;
     int global_arguments_ok = 0;
 
@@ -131,18 +84,17 @@ int main(int argc, char** argv) {
     );
 
     if (!global_arguments_ok) {
-        if (rank == 0) {
-            std::cerr << "Usage: "
-                      << argv[0]
-                      << " [--n GRID_SIZE]"
-                      << " [--solver mpi|hybrid]"
-                      << " [--comm allgatherv|halo]"
-                      << " [--run-id ID]"
-                      << " [--timing-output PATH]\n";
-        }
         MPI_Finalize();
         return 1;
     }
+
+    const int n = cli.n;
+    const std::string solver = cli.solver;
+    const std::string communication = cli.communication;
+    const std::string run_id = cli.run_id;
+    const std::string timing_output = cli.timing_output;
+    const std::string correctness_output =
+        cli.correctness_output;
 
     // All MPI ranks must use the same grid size.
     int min_n = 0;
@@ -212,6 +164,41 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    double min_tol = 0.0;
+    double max_tol = 0.0;
+    int min_iterations = 0;
+    int max_iterations = 0;
+
+    MPI_Allreduce(
+        &cli.tolerance, &min_tol,
+        1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD
+    );
+
+    MPI_Allreduce(
+        &cli.tolerance, &max_tol,
+        1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD
+    );
+
+    MPI_Allreduce(
+        &cli.max_iterations, &min_iterations,
+        1, MPI_INT, MPI_MIN, MPI_COMM_WORLD
+    );
+
+    MPI_Allreduce(
+        &cli.max_iterations, &max_iterations,
+        1, MPI_INT, MPI_MAX, MPI_COMM_WORLD
+    );
+
+    if (min_tol != max_tol ||
+        min_iterations != max_iterations) {
+        if (rank == 0) {
+            std::cerr
+                << "Inconsistent solver options across ranks\n";
+        }
+        MPI_Finalize();
+        return 1;
+    }
+
     const int N = n * n;
 
     const RowPartition part =
@@ -254,7 +241,8 @@ int main(int argc, char** argv) {
         );
 
     SolverOptions options;
-    options.tolerance = 1e-8;
+    options.tolerance = cli.tolerance;
+    options.max_iterations = cli.max_iterations;
 
     // Halo preprocessing is excluded from CG-only timing.
     HaloExchangePlan halo_plan;
@@ -456,6 +444,38 @@ int main(int argc, char** argv) {
             );
         } catch (const std::exception& e) {
             std::cerr << "Timing CSV error: "
+                      << e.what() << "\n";
+            write_ok = 0;
+        }
+    }
+
+    // Correctness CSV output is outside CG-only timing.
+    if (rank == 0 && !correctness_output.empty()) {
+        try {
+            CorrectnessRecord record;
+            record.run_id = run_id;
+            record.dim = 2;
+            record.n = n;
+            record.N = N;
+            record.solver = solver;
+            record.comm = communication;
+            record.ranks = size;
+            record.threads =
+                (solver == "hybrid") ? omp_get_max_threads() : 1;
+            record.iterations = result.iterations;
+            record.converged = result.converged;
+            record.recursive_rel_residual =
+                result.recursive_rel_residual;
+            record.true_rel_residual = true_residual;
+            record.relative_solution_error = relative_error;
+            record.passed = (global_ok != 0);
+            record.git_commit = benchmark_git_commit();
+
+            append_correctness_csv(
+                correctness_output, record
+            );
+        } catch (const std::exception& e) {
+            std::cerr << "Correctness CSV error: "
                       << e.what() << "\n";
             write_ok = 0;
         }
