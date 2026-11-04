@@ -1,6 +1,8 @@
 #include "halo_exchange.hpp"
 
 #include <algorithm>
+#include <unordered_map>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -242,16 +244,51 @@ HaloExchangePlan build_halo_exchange_plan(
     );
 
     // Compute prefix-sum displacements.
-    int total_recv = 0;
-    int total_send = 0;
+    long long total_recv_wide = 0;
+    long long total_send_wide = 0;
+
+    bool counts_valid = true;
 
     for (int r = 0; r < size; ++r) {
-        plan.recv_displs[r] = total_recv;
-        plan.send_displs[r] = total_send;
+        total_recv_wide += plan.recv_counts[r];
+        total_send_wide += plan.send_counts[r];
 
-        total_recv += plan.recv_counts[r];
-        total_send += plan.send_counts[r];
+        if (total_recv_wide >
+                std::numeric_limits<int>::max() ||
+            total_send_wide >
+                std::numeric_limits<int>::max()) {
+            counts_valid = false;
+            break;
+        }
+
+        plan.recv_displs[r] = static_cast<int>(
+            total_recv_wide - plan.recv_counts[r]
+        );
+
+        plan.send_displs[r] = static_cast<int>(
+            total_send_wide - plan.send_counts[r]
+        );
     }
+
+    const int counts_ok = counts_valid ? 1 : 0;
+    int global_counts_ok = 0;
+
+    MPI_Allreduce(
+        &counts_ok, &global_counts_ok,
+        1, MPI_INT, MPI_MIN, comm
+    );
+
+    if (!global_counts_ok) {
+        throw std::overflow_error(
+            "Halo communication count exceeds int range"
+        );
+    }
+
+    const int total_recv =
+        static_cast<int>(total_recv_wide);
+
+    const int total_send =
+        static_cast<int>(total_send_wide);
 
     // Group requested global indices by owner rank.
     plan.recv_global_indices.resize(total_recv);
@@ -324,6 +361,63 @@ HaloExchangePlan build_halo_exchange_plan(
     if (!global_request_ok) {
         throw std::invalid_argument(
             "Invalid Halo index request"
+        );
+    }
+
+    // Precompute CSR column-to-vector positions.
+    // Ghost positions follow recv_global_indices order.
+    std::unordered_map<int, std::size_t> ghost_lookup;
+
+    ghost_lookup.reserve(plan.recv_global_indices.size());
+
+    for (std::size_t i = 0;
+         i < plan.recv_global_indices.size(); ++i) {
+        ghost_lookup.emplace(
+            plan.recv_global_indices[i], i
+        );
+    }
+
+    plan.vector_positions.resize(A.col_idx.size());
+
+    bool mapping_valid =
+        plan.recv_global_indices.size() <=
+        static_cast<std::size_t>(
+            std::numeric_limits<int>::max()
+        );
+
+    if (mapping_valid) {
+        for (std::size_t k = 0; k < A.col_idx.size(); ++k) {
+            const int col = A.col_idx[k];
+
+            if (col >= local_start && col < local_end) {
+                plan.vector_positions[k] = col - local_start;
+            } else {
+                const auto it = ghost_lookup.find(col);
+
+                if (it == ghost_lookup.end()) {
+                    mapping_valid = false;
+                    break;
+                }
+
+                plan.vector_positions[k] =
+                    -static_cast<int>(it->second) - 1;
+            }
+        }
+    }
+
+    // Reject inconsistent mappings collectively.
+    const int mapping_ok = mapping_valid ? 1 : 0;
+    int global_mapping_ok = 0;
+
+    MPI_Allreduce(
+        &mapping_ok,
+        &global_mapping_ok,
+        1, MPI_INT, MPI_MIN, comm
+    );
+
+    if (!global_mapping_ok) {
+        throw std::invalid_argument(
+            "Invalid Halo CSR vector-position mapping"
         );
     }
 

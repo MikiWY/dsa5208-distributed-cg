@@ -5,6 +5,7 @@
 
 #include "cg.hpp"
 #include "common.hpp"
+#include "halo_exchange.hpp"
 
 // MPI-only Conjugate Gradient solver using blocking Halo Exchange.
 //
@@ -46,5 +47,23 @@ SolverResult distributed_conjugate_gradient_halo(
     const CSRMatrix& A,
     const std::vector<double>& b_local,
     const SolverOptions& options,
+    MPI_Comm comm
+);
+
+// Solve using a HaloExchangePlan built before this call.
+//
+// The plan must correspond to A and the same MPI communicator.
+// All ranks must participate in the same collective operations.
+//
+// Intended for benchmarks that exclude Halo Plan construction
+// from the CG-only timed region.
+//
+// The supplied plan is reused and is not modified.
+
+SolverResult distributed_conjugate_gradient_halo(
+    const CSRMatrix& A,
+    const std::vector<double>& b_local,
+    const SolverOptions& options,
+    const HaloExchangePlan& halo_plan,
     MPI_Comm comm
 );

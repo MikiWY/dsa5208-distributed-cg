@@ -16,6 +16,7 @@ SolverResult distributed_conjugate_gradient_halo(
     const CSRMatrix& A,
     const std::vector<double>& b_local,
     const SolverOptions& options,
+    const HaloExchangePlan& halo_plan,
     MPI_Comm comm
 ) {
     int rank = 0;
@@ -148,10 +149,6 @@ SolverResult distributed_conjugate_gradient_halo(
                 std::min(10LL * A.global_rows, 100000LL)
               );
 
-    // Build Halo communication plan once, before CG iterations.
-    const HaloExchangePlan halo_plan =
-        build_halo_exchange_plan(A, comm);
-
     const double b_norm = std::sqrt(b_norm_squared);
     double rr_old = b_norm_squared;
 
@@ -237,4 +234,19 @@ SolverResult distributed_conjugate_gradient_halo(
         TerminationReason::MaxIterations;
 
     return result;
+}
+
+// Compatibility interface: construct the Halo Plan before solving.
+SolverResult distributed_conjugate_gradient_halo(
+    const CSRMatrix& A,
+    const std::vector<double>& b_local,
+    const SolverOptions& options,
+    MPI_Comm comm
+) {
+    const HaloExchangePlan halo_plan =
+        build_halo_exchange_plan(A, comm);
+
+    return distributed_conjugate_gradient_halo(
+        A, b_local, options, halo_plan, comm
+    );
 }

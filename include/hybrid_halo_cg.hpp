@@ -5,6 +5,7 @@
 
 #include "cg.hpp"
 #include "common.hpp"
+#include "halo_exchange.hpp"
 
 // Hybrid MPI + OpenMP Conjugate Gradient solver
 // using blocking Halo Exchange.
@@ -46,5 +47,23 @@ SolverResult hybrid_conjugate_gradient_halo(
     const CSRMatrix& A,
     const std::vector<double>& b_local,
     const SolverOptions& options,
+    MPI_Comm comm
+);
+
+// Hybrid Halo CG using a preconstructed communication plan.
+//
+// The plan must correspond to A and the same MPI communicator.
+// MPI communication must be performed by the initializing thread,
+// outside OpenMP parallel regions.
+//
+// Intended for CG-only timing without Halo Plan preprocessing.
+//
+// The supplied plan is reused and is not modified.
+
+SolverResult hybrid_conjugate_gradient_halo(
+    const CSRMatrix& A,
+    const std::vector<double>& b_local,
+    const SolverOptions& options,
+    const HaloExchangePlan& halo_plan,
     MPI_Comm comm
 );

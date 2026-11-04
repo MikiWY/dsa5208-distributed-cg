@@ -1,4 +1,5 @@
 #include <mpi.h>
+#include <omp.h>
 
 #include <cmath>
 #include <exception>
@@ -9,13 +10,23 @@
 #include <vector>
 
 #include "benchmark_csv.hpp"
+#include "benchmark_version.hpp"
 #include "distributed_cg.hpp"
+#include "distributed_cg_halo.hpp"
+#include "hybrid_cg.hpp"
+#include "hybrid_halo_cg.hpp"
+#include "halo_exchange.hpp"
 #include "distributed_spmv.hpp"
 #include "matrix.hpp"
 #include "partition.hpp"
 
 int main(int argc, char** argv) {
-    MPI_Init(&argc, &argv);
+    int provided = MPI_THREAD_SINGLE;
+
+    MPI_Init_thread(
+        &argc, &argv,
+        MPI_THREAD_FUNNELED, &provided
+    );
 
     int rank = 0;
     int size = 0;
@@ -23,10 +34,39 @@ int main(int argc, char** argv) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 
+    int is_main_thread = 0;
+    MPI_Is_thread_main(&is_main_thread);
+
+    const int local_thread_ok =
+        (provided >= MPI_THREAD_FUNNELED &&
+         is_main_thread != 0) ? 1 : 0;
+
+    int global_thread_ok = 0;
+
+    MPI_Allreduce(
+        &local_thread_ok, &global_thread_ok,
+        1, MPI_INT, MPI_MIN, MPI_COMM_WORLD
+    );
+
+    if (!global_thread_ok) {
+        if (rank == 0) {
+            std::cerr
+                << "MPI_THREAD_FUNNELED support required\n";
+        }
+
+        MPI_Finalize();
+        return 1;
+    }
+
     // Grid size: default n=8, optionally specified by --n.
     int n = 8;
     std::string run_id = "manual";
     std::string timing_output;
+
+    // Solver and communication configuration.
+    std::string solver = "mpi";
+    std::string communication = "allgatherv";
+
     bool arguments_valid = true;
 
     for (int i = 1; i < argc; ++i) {
@@ -49,6 +89,21 @@ int main(int argc, char** argv) {
             } catch (const std::exception&) {
                 arguments_valid = false;
             }
+        } else if (arg == "--solver" && i + 1 < argc) {
+            solver = argv[++i];
+
+            if (solver != "mpi" && solver != "hybrid") {
+                arguments_valid = false;
+            }
+
+        } else if (arg == "--comm" && i + 1 < argc) {
+            communication = argv[++i];
+
+            if (communication != "allgatherv" &&
+                communication != "halo") {
+                arguments_valid = false;
+            }
+
         } else if (arg == "--run-id" && i + 1 < argc) {
             run_id = argv[++i];
             if (run_id.empty()) {
@@ -76,7 +131,12 @@ int main(int argc, char** argv) {
     if (!global_arguments_ok) {
         if (rank == 0) {
             std::cerr << "Usage: "
-                      << argv[0] << " [--n GRID_SIZE]\n";
+                      << argv[0]
+                      << " [--n GRID_SIZE]"
+                      << " [--solver mpi|hybrid]"
+                      << " [--comm allgatherv|halo]"
+                      << " [--run-id ID]"
+                      << " [--timing-output PATH]\n";
         }
         MPI_Finalize();
         return 1;
@@ -101,6 +161,51 @@ int main(int argc, char** argv) {
             std::cerr
                 << "Inconsistent grid size across MPI ranks\n";
         }
+        MPI_Finalize();
+        return 1;
+    }
+
+    // Encode solver and communication choices.
+    const int solver_code =
+        (solver == "mpi") ? 0 : 1;
+
+    const int communication_code =
+        (communication == "allgatherv") ? 0 : 1;
+
+    // Ensure every MPI rank selects the same configuration.
+    int min_solver = 0;
+    int max_solver = 0;
+    int min_comm = 0;
+    int max_comm = 0;
+
+    MPI_Allreduce(
+        &solver_code, &min_solver,
+        1, MPI_INT, MPI_MIN, MPI_COMM_WORLD
+    );
+
+    MPI_Allreduce(
+        &solver_code, &max_solver,
+        1, MPI_INT, MPI_MAX, MPI_COMM_WORLD
+    );
+
+    MPI_Allreduce(
+        &communication_code, &min_comm,
+        1, MPI_INT, MPI_MIN, MPI_COMM_WORLD
+    );
+
+    MPI_Allreduce(
+        &communication_code, &max_comm,
+        1, MPI_INT, MPI_MAX, MPI_COMM_WORLD
+    );
+
+    if (min_solver != max_solver ||
+        min_comm != max_comm) {
+        if (rank == 0) {
+            std::cerr
+                << "Inconsistent solver or communication "
+                << "configuration across MPI ranks\n";
+        }
+
         MPI_Finalize();
         return 1;
     }
@@ -149,15 +254,40 @@ int main(int argc, char** argv) {
     SolverOptions options;
     options.tolerance = 1e-8;
 
+    // Halo preprocessing is excluded from CG-only timing.
+    HaloExchangePlan halo_plan;
+
+    if (communication == "halo") {
+        halo_plan = build_halo_exchange_plan(
+            A, MPI_COMM_WORLD
+        );
+    }
+
     // Synchronize ranks before timing.
     MPI_Barrier(MPI_COMM_WORLD);
 
     const double start = MPI_Wtime();
 
-    const SolverResult result =
-        distributed_conjugate_gradient_allgatherv(
+    SolverResult result;
+
+    if (solver == "mpi" && communication == "allgatherv") {
+        result = distributed_conjugate_gradient_allgatherv(
             A, b_local, options, MPI_COMM_WORLD
         );
+    } else if (solver == "mpi" && communication == "halo") {
+        result = distributed_conjugate_gradient_halo(
+            A, b_local, options, halo_plan, MPI_COMM_WORLD
+        );
+    } else if (solver == "hybrid" &&
+               communication == "allgatherv") {
+        result = hybrid_conjugate_gradient_allgatherv(
+            A, b_local, options, MPI_COMM_WORLD
+        );
+    } else {
+        result = hybrid_conjugate_gradient_halo(
+            A, b_local, options, halo_plan, MPI_COMM_WORLD
+        );
+    }
 
     const double local_time = MPI_Wtime() - start;
 
@@ -234,6 +364,13 @@ int main(int argc, char** argv) {
     if (rank == 0) {
         std::cout << std::setprecision(12);
 
+        std::cout << "Solver: " << solver << "\n";
+        std::cout << "Communication: " << communication << "\n";
+        std::cout << "Threads: "
+                  << ((solver == "hybrid")
+                      ? omp_get_max_threads() : 1)
+                  << "\n";
+
         std::cout << "Grid n: " << n << "\n";
         std::cout << "MPI ranks: " << size << "\n";
         std::cout << "Iterations: "
@@ -247,7 +384,7 @@ int main(int argc, char** argv) {
         std::cout << "Relative solution error: "
                   << relative_error << "\n";
         std::cout << (global_ok ? "PASS" : "FAIL")
-                  << ": MPI CG benchmark smoke test\n";
+                  << ": CG benchmark smoke test\n";
     }
 
     // Write one timing record from rank 0 only.
@@ -261,13 +398,15 @@ int main(int argc, char** argv) {
             record.run_id = run_id;
             record.dim = 2;
             record.n = n;
-            record.comm = "allgatherv";
+            record.comm = communication;
             record.ranks = size;
-            record.threads = 1;
+            record.threads =
+                (solver == "hybrid") ? omp_get_max_threads() : 1;
             record.iterations = result.iterations;
             record.converged = result.converged;
             record.time_s = time_s;
             record.relative_residual = true_residual;
+            record.git_commit = benchmark_git_commit();
 
             // Timing components are not measured yet.
             // Leave them empty rather than reporting zero.

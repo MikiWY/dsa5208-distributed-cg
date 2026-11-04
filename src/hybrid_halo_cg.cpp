@@ -17,6 +17,7 @@ SolverResult hybrid_conjugate_gradient_halo(
     const CSRMatrix& A,
     const std::vector<double>& b_local,
     const SolverOptions& options,
+    const HaloExchangePlan& halo_plan,
     MPI_Comm comm
 ) {
     int rank = 0;
@@ -193,11 +194,6 @@ SolverResult hybrid_conjugate_gradient_halo(
                 std::min(10LL * A.global_rows, 100000LL)
               );
 
-    // Construct Halo communication layout once.
-    // Reuse it throughout the CG iteration loop.
-    const HaloExchangePlan halo_plan =
-        build_halo_exchange_plan(A, comm);
-
     const double b_norm = std::sqrt(b_norm_squared);
     double rr_old = b_norm_squared;
 
@@ -283,4 +279,20 @@ SolverResult hybrid_conjugate_gradient_halo(
         TerminationReason::MaxIterations;
 
     return result;
+}
+
+// Compatibility interface: build the Halo Plan before solving.
+// Existing correctness tests continue using this interface.
+SolverResult hybrid_conjugate_gradient_halo(
+    const CSRMatrix& A,
+    const std::vector<double>& b_local,
+    const SolverOptions& options,
+    MPI_Comm comm
+) {
+    const HaloExchangePlan halo_plan =
+        build_halo_exchange_plan(A, comm);
+
+    return hybrid_conjugate_gradient_halo(
+        A, b_local, options, halo_plan, comm
+    );
 }

@@ -39,6 +39,24 @@ struct HaloExchangePlan {
 
     // Flattened global indices expected from remote ranks.
     std::vector<int> recv_global_indices;
+
+    // Precomputed CSR column-to-vector positions.
+    //
+    // One entry per CSR nonzero, in A.col_idx order.
+    //
+    // Nonnegative position:
+    //   Index into x_local.
+    //
+    // Negative position:
+    //   -(ghost_offset + 1), where ghost_offset indexes
+    //   received values in recv_global_indices order.
+    //
+    // This mapping depends on the exact CSR column structure
+    // used when constructing the HaloExchangePlan.
+    //
+    // Constructed once during preprocessing and reused
+    // throughout CG iterations.
+    std::vector<int> vector_positions;
 };
 
 // Build a reusable Halo Exchange communication plan.
